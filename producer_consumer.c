@@ -5,14 +5,28 @@
 #include <stdlib.h>
 #include <sys/shm.h>
 #include <sys/sem.h>
+#include <pthread.h>
 
 #include "shm_com.h"
 
-static int set_semvalue(void);
-static void del_semvalue(void);
-static int semaphore_p(void);
-static int semaphore_v(void);
-static int sem_id;
+static int set_semvalue(int sem_id, int value);
+static void del_semvalue(int sem_id);
+static int semaphore_p(int sem_id);
+static int semaphore_v(int sem_id);
+void* consumer(void* arg);
+void* producer(void* arg);
+static int producerItem(void);
+static void putItemIntoBuffer(int item);
+static int removeItemFromBuffer(void);
+static void consumerItem(int item);
+
+static int sem_empty;
+static int sem_full;
+static int sem_mutex;
+
+
+void *shared_memory = (void*)0;
+struct shared_use_st *shared_stuff;
 
 int main(int argc, char const *argv[])
 {
@@ -21,18 +35,30 @@ int main(int argc, char const *argv[])
 	printf("producer-consumer program starting...\n");
 
 	/*建立信号量*/
-	sem_id = semget((key_t)1234, 1, 0666|IPC_CREAT);
-	if (!set_semvalue()) //初始化信号量
+	sem_empty = semget((key_t)1234, 1, 0666|IPC_CREAT);
+	if (!set_semvalue(sem_empty, 1)) 												//初始化空信号量为1
+		{
+			fprintf(stderr, "Failed to initialize semaphore\n");
+			exit(EXIT_FAILURE);
+		}
+
+	sem_full = semget((key_t)1233, 1, 0666|IPC_CREAT);
+	if (!set_semvalue(sem_full, 0)) 												//初始化满信号量为0
+		{
+			fprintf(stderr, "Failed to initialize semaphore\n");
+			exit(EXIT_FAILURE);
+		}
+
+	sem_mutex = semget((key_t)1232, 1, 0666|IPC_CREAT);
+	if (!set_semvalue(sem_mutex, TEXT_SZ)) 									//初始化缓冲区信号量为TEXT_SZ;
 		{
 			fprintf(stderr, "Failed to initialize semaphore\n");
 			exit(EXIT_FAILURE);
 		}
 
 	/*建立共享内存*/
-	void *shared_memory = (void*)0;
-	struct shared_use_st *shared_stuff;
 	int shmid;
-	shmid = shmget((key_t)1234, sizeof(struct shared_use_st), 0666 | IPC_CREAT);
+	shmid = shmget((key_t)1231, sizeof(struct shared_use_st), 0666 | IPC_CREAT);
 	if (shmid == -1)
 	{
 		fprintf(stderr, "shmget failed\n");
@@ -68,49 +94,101 @@ int main(int argc, char const *argv[])
       }  
   } 
 
-  // 子进程逻辑
+  /*-----子进程逻辑-----*/
   if(ret==0) {
-  	/*连接到共享内存*/
-  // 	shared_memory = shmat(shmid, (void*)0, 0);
-		// if (shared_memory == (void*)-1) {
-		// 	fprintf(stderr, "shmat failed\n");
-		// 	exit(EXIT_FAILURE);	
-		// }
-		// shared_stuff = (struct shared_use_st *)shared_memory;
-
-		while(1) {
-			if(!semaphore_p()) exit(EXIT_FAILURE);
-			/*临界操作*/
-				shared_stuff->in++;
-				printf("child[%d], parent[%d], %d\n", getpid(), getppid(), shared_stuff->in);
-			if(!semaphore_v()) exit(EXIT_FAILURE);
-		}
+  	int res;
+  	pthread_t consumer_thread;
+  	/****新线程执行消费者程序*******/
+  	res = pthread_create(&consumer_thread, NULL, consumer, (void*)0);
+  	if (res != 0)
+  	{
+  		perror("Thread creation failed");
+  		exit(EXIT_FAILURE);
+  	}
+  	/****主线程执行生产者程序*******/
+  	producer((void*)0);
   }
 
 	/*父进程逻辑*/
   if (ret > 0)
   {
-  	
+  	while(true);
   }
 }
 
-static int set_semvalue(void)
+
+void* consumer(void* arg)
+{
+	int item;
+	while(true) {
+		semaphore_p(sem_full);
+		semaphore_p(sem_mutex);
+		item = removeItemFromBuffer();
+		shared_stuff->out = (shared_stuff->out + 1) % TEXT_SZ;
+		consumerItem(item);
+		semaphore_v(sem_mutex);
+		semaphore_v(sem_empty);
+		sleep(2);
+	}
+}
+
+void* producer(void *arg)
+{
+	int item;
+	while(true) {
+			item = producerItem();
+			semaphore_p(sem_empty);
+			semaphore_p(sem_mutex);
+			putItemIntoBuffer(item);
+			shared_stuff->in = (shared_stuff->in + 1) % TEXT_SZ;
+			semaphore_v(sem_mutex);
+			semaphore_v(sem_full);
+			sleep(2);
+	}
+}
+
+static int producerItem(void) {
+	return getpid();
+}
+
+static void putItemIntoBuffer(int item) {
+	
+	shared_stuff->some_text[shared_stuff->in] = item;	
+
+}
+
+static int removeItemFromBuffer(void) {
+
+	return shared_stuff->some_text[shared_stuff->out];
+
+}
+
+static void consumerItem(int item) {
+
+	printf("pid[%4d] consumed %d: %d\n", getpid(), shared_stuff->out, item);
+
+}
+
+
+
+
+static int set_semvalue(int sem_id, int value)
 {
 	union semun sem_union;
 
-	sem_union.val = 1;
+	sem_union.val = value;
 	if (semctl(sem_id, 0, SETVAL, sem_union) == -1) return 0;
 	return 1;
 }
 
-static void del_semvalue(void)
+static void del_semvalue(int sem_id)
 {
 	union semun sem_union;
 	if (semctl(sem_id, 0, IPC_RMID, sem_union) == -1)
 		fprintf(stderr, "Failed to delete semaphore\n");
 }
 
-static int semaphore_p(void)
+static int semaphore_p(int sem_id)
 {
 	struct sembuf sem_b;
 
@@ -125,7 +203,7 @@ static int semaphore_p(void)
 	return 1;
 }
 
-static int semaphore_v(void)
+static int semaphore_v(int sem_id)
 {
 		struct sembuf sem_b;
 
@@ -139,8 +217,3 @@ static int semaphore_v(void)
 	}
 	return 1;
 }
-
-
-
-
-
