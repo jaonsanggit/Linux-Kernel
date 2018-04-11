@@ -36,21 +36,21 @@ int main(int argc, char const *argv[])
 
 	/*建立信号量*/
 	sem_empty = semget((key_t)1234, 1, 0666|IPC_CREAT);
-	if (!set_semvalue(sem_empty, 1)) 												//初始化空信号量为1
+	if (!set_semvalue(sem_empty, TEXT_SZ)) 												//初始化空信号量为TEXT_SZ
 		{
 			fprintf(stderr, "Failed to initialize semaphore\n");
 			exit(EXIT_FAILURE);
 		}
 
 	sem_full = semget((key_t)1233, 1, 0666|IPC_CREAT);
-	if (!set_semvalue(sem_full, 0)) 												//初始化满信号量为0
+	if (!set_semvalue(sem_full, 0)) 															//初始化满信号量为0
 		{
 			fprintf(stderr, "Failed to initialize semaphore\n");
 			exit(EXIT_FAILURE);
 		}
 
 	sem_mutex = semget((key_t)1232, 1, 0666|IPC_CREAT);
-	if (!set_semvalue(sem_mutex, TEXT_SZ)) 									//初始化缓冲区信号量为TEXT_SZ;
+	if (!set_semvalue(sem_mutex, 1)) 															//初始化缓冲区信号量为1;
 		{
 			fprintf(stderr, "Failed to initialize semaphore\n");
 			exit(EXIT_FAILURE);
@@ -158,8 +158,10 @@ static void putItemIntoBuffer(int item) {
 }
 
 static int removeItemFromBuffer(void) {
-
-	return shared_stuff->some_text[shared_stuff->out];
+	int tmp;
+	tmp = shared_stuff->some_text[shared_stuff->out];
+	shared_stuff->some_text[shared_stuff->out] = 0;
+	return tmp;
 
 }
 
